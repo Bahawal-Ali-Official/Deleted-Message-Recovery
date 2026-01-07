@@ -1,13 +1,17 @@
 import { Boom } from '@hapi/boom';
-import makeWASocket, { 
+import BaileysPkg from '@whiskeysockets/baileys';
+const { 
+    default: makeWASocket, 
     useMultiFileAuthState, 
     DisconnectReason, 
     fetchLatestBaileysVersion, 
     downloadMediaMessage 
-} from '@whiskeysockets/baileys';
+} = BaileysPkg;
+
 import pino from 'pino';
-import express from 'express'; 
-import QRCode from 'qrcode';   
+import express from 'express';
+import QRCode from 'qrcode';
+
 const logger = pino({ level: 'info' });
 
 const app = express();
@@ -32,6 +36,7 @@ app.get('/', async (req, res) => {
         res.send(`
             <div style="display:flex; justify-content:center; align-items:center; height:100vh;">
                 <h1>Bot is connected and Running! 🚀</h1>
+                <p>Check WhatsApp to ensure it's working.</p>
             </div>
         `);
     }
@@ -41,9 +46,7 @@ app.listen(port, () => {
     console.log(`Web QR Server running at: http://localhost:${port}`);
 });
 
-// --- CONFIGURATION ---
 const messageStore = new Map();
-// ▼▼▼ YAHAN APNA NUMBER DALEIN ▼▼▼
 const OWNER_JID = '923000000000@s.whatsapp.net'; 
 
 async function processSingleDeletedMessage(sock, deletedMsg) {
@@ -120,13 +123,17 @@ async function startBot() {
 
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
 
-    const sock = makeWASocket({ version, logger, auth: state });
+    const sock = makeWASocket({ 
+        version, 
+        logger, 
+        auth: state,
+        shouldIgnoreJid: jid => typeof jid === 'string' && jid.includes('@broadcast'),
+    });
 
     sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect, qr } = update;
         
         if (qr) {
-         
             currentQR = qr;
             console.log('QR Code generated. Check browser.');
         }
@@ -136,7 +143,7 @@ async function startBot() {
             if (shouldReconnect) startBot();
         } else if (connection === 'open') {
             console.log('Connection opened! Bot is online. ✅');
-            currentQR = null; 
+            currentQR = null;
         }
     });
 
