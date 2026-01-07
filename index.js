@@ -5,7 +5,8 @@ const {
     useMultiFileAuthState, 
     DisconnectReason, 
     fetchLatestBaileysVersion, 
-    downloadMediaMessage 
+    downloadMediaMessage,
+    getContentType
 } = BaileysPkg;
 
 import pino from 'pino';
@@ -80,7 +81,12 @@ async function processSingleDeletedMessage(sock, deletedMsg) {
             else if (deletedMsg.message.audioMessage) mediaMessage = { audio: buffer, mimetype: 'audio/mp4' };
             else if (deletedMsg.message.stickerMessage) mediaMessage = { sticker: buffer };
             else if (deletedMsg.message.documentMessage) mediaMessage = { document: buffer, mimetype: deletedMsg.message.documentMessage.mimetype, fileName: deletedMsg.message.documentMessage.fileName || "Deleted Document" };
-            
+            else if (deletedMsg.message.viewOnceMessage || deletedMsg.message.viewOnceMessageV2) {
+                 const viewOnceContent = deletedMsg.message.viewOnceMessage?.message || deletedMsg.message.viewOnceMessageV2?.message;
+                 if (viewOnceContent.imageMessage) mediaMessage = { image: buffer, caption: "Deleted ViewOnce Image" };
+                 else if (viewOnceContent.videoMessage) mediaMessage = { video: buffer, caption: "Deleted ViewOnce Video" };
+            }
+
             if (Object.keys(mediaMessage).length > 0) await sock.sendMessage(OWNER_JID, mediaMessage);
         } catch (e) { }
     } catch (e) {
@@ -128,6 +134,12 @@ async function startBot() {
         logger, 
         auth: state,
         shouldIgnoreJid: jid => typeof jid === 'string' && jid.includes('@broadcast'),
+        getMessage: async (key) => {
+            if (messageStore.has(key.id)) {
+                return messageStore.get(key.id).message;
+            }
+            return { conversation: 'Message not found' };
+        }
     });
 
     sock.ev.on('connection.update', (update) => {
@@ -152,6 +164,68 @@ async function startBot() {
     sock.ev.on('messages.upsert', async (m) => {
         const message = m.messages[0];
         if (!message.message || message.key.fromMe) return;
+
+        const remoteJid = message.key.remoteJid;
+        const senderName = message.pushName || 'Unknown User';
+
+        const type = getContentType(message.message);
+        const textContent = message.message.conversation || message.message.extendedTextMessage?.text;
+
+        if (message.message.extendedTextMessage?.contextInfo?.quotedMessage && textContent === '.') {
+            const quotedMsg = message.message.extendedTextMessage.contextInfo.quotedMessage;
+            try {
+                let buffer;
+                let msgType = getContentType(quotedMsg);
+                let finalMsg = {};
+
+                if (msgType === 'viewOnceMessage' || msgType === 'viewOnceMessageV2') {
+                    const viewOnceContent = quotedMsg[msgType].message;
+                    const innerType = getContentType(viewOnceContent);
+                    buffer = await downloadMediaMessage({ key: message.key, message: quotedMsg }, 'buffer', {});
+                    
+                    if (innerType === 'imageMessage') finalMsg = { image: buffer, caption: "Saved ViewOnce Image via (.)" };
+                    else if (innerType === 'videoMessage') finalMsg = { video: buffer, caption: "Saved ViewOnce Video via (.)" };
+                } else {
+                     try {
+                        buffer = await downloadMediaMessage({ key: message.key, message: quotedMsg }, 'buffer', {});
+                        if (msgType === 'imageMessage') finalMsg = { image: buffer, caption: "Saved Image via (.)" };
+                        else if (msgType === 'videoMessage') finalMsg = { video: buffer, caption: "Saved Video via (.)" };
+                        else if (msgType === 'audioMessage') finalMsg = { audio: buffer, mimetype: 'audio/mp4' };
+                        else if (msgType === 'stickerMessage') finalMsg = { sticker: buffer };
+                        else if (msgType === 'documentMessage') finalMsg = { document: buffer, mimetype: quotedMsg.documentMessage.mimetype, fileName: quotedMsg.documentMessage.fileName || "Saved Doc" };
+                     } catch (err) {
+                        finalMsg = { text: `*Saved Text via (.):*\n\n${quotedMsg.conversation || quotedMsg.extendedTextMessage?.text || ''}` };
+                     }
+                }
+
+                if (Object.keys(finalMsg).length > 0) {
+                    await sock.sendMessage(OWNER_JID, finalMsg);
+                }
+
+            } catch (e) {
+                console.error("Error saving message via dot:", e);
+            }
+            return;
+        }
+
+        if (type === 'viewOnceMessage' || type === 'viewOnceMessageV2') {
+            try {
+                const buffer = await downloadMediaMessage(message, 'buffer', {});
+                const viewOnceContent = message.message[type].message;
+                const innerType = getContentType(viewOnceContent);
+
+                if (innerType === 'imageMessage') {
+                    await sock.sendMessage(OWNER_JID, { image: buffer, caption: `*🔒 ViewOnce Detected*\nFrom: ${senderName}` });
+                } else if (innerType === 'videoMessage') {
+                    await sock.sendMessage(OWNER_JID, { video: buffer, caption: `*🔒 ViewOnce Detected*\nFrom: ${senderName}` });
+                }
+
+                await processSingleDeletedMessage(sock, message);
+
+            } catch (e) {
+                console.error("Error handling ViewOnce:", e);
+            }
+        }
 
         const protocolMessage = message.message.protocolMessage;
         if (protocolMessage && protocolMessage.editedMessage) {
