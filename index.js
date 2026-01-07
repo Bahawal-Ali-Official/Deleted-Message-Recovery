@@ -1,5 +1,3 @@
-//index.js
-
 import { Boom } from '@hapi/boom';
 import makeWASocket, { 
     useMultiFileAuthState, 
@@ -8,18 +6,46 @@ import makeWASocket, {
     downloadMediaMessage 
 } from '@whiskeysockets/baileys';
 import pino from 'pino';
-import qrcode from 'qrcode-terminal';
-
+import express from 'express'; 
+import QRCode from 'qrcode';   
 const logger = pino({ level: 'info' });
 
-// --- FEATURE SETUP ---
-const messageStore = new Map();
-// ▼▼▼ YAHAN APNA PERSONAL NUMBER LIKHEIN (COUNTRY CODE KE SAATH) ▼▼▼
-const OWNER_JID = 'YOUR_NUMBER_HERE@s.whatsapp.net'; // Example: '923001234567@s.whatsapp.net'
+const app = express();
+const port = process.env.PORT || 3000;
+let currentQR = null;
 
-//======================================================================//
-//                  DELETED MESSAGE PROCESSOR FUNCTION                  //
-//======================================================================//
+app.get('/', async (req, res) => {
+    if (currentQR) {
+        try {
+            const url = await QRCode.toDataURL(currentQR);
+            res.send(`
+                <div style="display:flex; justify-content:center; align-items:center; height:100vh; flex-direction:column;">
+                    <h1>Scan this QR Code</h1>
+                    <img src="${url}" alt="QR Code" width="300"/>
+                    <p>Refresh page if QR expires.</p>
+                </div>
+            `);
+        } catch (err) {
+            res.status(500).send('Error generating QR code');
+        }
+    } else {
+        res.send(`
+            <div style="display:flex; justify-content:center; align-items:center; height:100vh;">
+                <h1>Bot is connected and Running! 🚀</h1>
+            </div>
+        `);
+    }
+});
+
+app.listen(port, () => {
+    console.log(`Web QR Server running at: http://localhost:${port}`);
+});
+
+// --- CONFIGURATION ---
+const messageStore = new Map();
+// ▼▼▼ YAHAN APNA NUMBER DALEIN ▼▼▼
+const OWNER_JID = '923000000000@s.whatsapp.net'; 
+
 async function processSingleDeletedMessage(sock, deletedMsg) {
     try {
         const remoteJid = deletedMsg.key.remoteJid;
@@ -53,15 +79,12 @@ async function processSingleDeletedMessage(sock, deletedMsg) {
             else if (deletedMsg.message.documentMessage) mediaMessage = { document: buffer, mimetype: deletedMsg.message.documentMessage.mimetype, fileName: deletedMsg.message.documentMessage.fileName || "Deleted Document" };
             
             if (Object.keys(mediaMessage).length > 0) await sock.sendMessage(OWNER_JID, mediaMessage);
-        } catch (e) { /* No media to download */ }
+        } catch (e) { }
     } catch (e) {
         console.log(`Failed to process a deleted message: ${e.message}`);
     }
 }
 
-//======================================================================//
-//                   EDITED MESSAGE PROCESSOR FUNCTION                  //
-//======================================================================//
 async function processSingleEditedMessage(sock, editEventMessage, originalMsgContent, newText) {
     try {
         const remoteJid = editEventMessage.key.remoteJid;
@@ -91,9 +114,6 @@ async function processSingleEditedMessage(sock, editEventMessage, originalMsgCon
     }
 }
 
-//======================================================================//
-//                         MAIN BOT FUNCTION                            //
-//======================================================================//
 async function startBot() {
     const { version, isLatest } = await fetchLatestBaileysVersion();
     console.log(`Using Baileys version v${version.join('.')}, isLatest: ${isLatest}`);
@@ -104,33 +124,29 @@ async function startBot() {
 
     sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect, qr } = update;
+        
         if (qr) {
-            console.log('------------------------------------------------');
-            qrcode.generate(qr, { small: true });
-            console.log('------------------------------------------------');
+         
+            currentQR = qr;
+            console.log('QR Code generated. Check browser.');
         }
+
         if (connection === 'close') {
             const shouldReconnect = (lastDisconnect.error instanceof Boom) && lastDisconnect.error.output.statusCode !== DisconnectReason.loggedOut;
             if (shouldReconnect) startBot();
         } else if (connection === 'open') {
             console.log('Connection opened! Bot is online. ✅');
+            currentQR = null; 
         }
     });
 
     sock.ev.on('creds.update', saveCreds);
 
-    // --- HANDLE NEW AND EDITED MESSAGES (UPSERT) ---
     sock.ev.on('messages.upsert', async (m) => {
         const message = m.messages[0];
-        
-        // --- DEBUGGING LINE ---
-        // Yeh line har naye event ka poora data console mein print karegi.
-        console.log('[UPSERT EVENT DATA]:', JSON.stringify(message, null, 2));
-
         if (!message.message || message.key.fromMe) return;
 
         const protocolMessage = message.message.protocolMessage;
-        // **FIX**: Ab hum 'editedMessage' ke hone ya na hone par check kar rahe hain.
         if (protocolMessage && protocolMessage.editedMessage) {
             const originalMsgId = protocolMessage.key.id;
             const originalMsg = messageStore.get(originalMsgId);
@@ -155,7 +171,6 @@ async function startBot() {
         }
     });
 
-    // --- HANDLE DELETED MESSAGES (UPDATE) ---
     sock.ev.on('messages.update', async (updates) => {
         for (const { key, update } of updates) {
             if (update.message === null) {
